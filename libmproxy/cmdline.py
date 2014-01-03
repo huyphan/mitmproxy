@@ -153,6 +153,7 @@ def get_common_options(options):
         wfile = options.wfile,
         verbosity = options.verbose,
         nopop = options.nopop,
+        generated_replay_script = options.generated_replay_script,
     )
 
 
@@ -260,6 +261,12 @@ def common_options(parser):
         "--no-upstream-cert", default=False,
         action="store_true", dest="no_upstream_cert",
         help="Don't connect to upstream server to look up certificate details."
+    )
+
+    parser.add_argument(
+       "--generated-replay-script", default=None,
+        action="store", dest="generated_replay_script",
+        help="Generate Python script to replay captured HTTP traffic and save to given file path"
     )
 
     group = parser.add_argument_group("Web App")

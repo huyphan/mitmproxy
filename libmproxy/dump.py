@@ -2,8 +2,29 @@ import sys, os
 import netlib.utils
 import flow, filt, utils
 
-class DumpError(Exception): pass
+REPLAY_SCRIPT_INIT_CODE = """
+import urllib, urllib2
 
+def send_request(url, params = None, headers = {}):
+    request = urllib2.Request(url, params, headers)
+    response = urllib2.urlopen(request)
+    data = response.read()
+    headers = response.headers
+    return headers, data
+"""
+
+REPLAY_SCRIPT_HTTP_GET_CODE = """
+headers = %s
+resp_headers, data = send_request('%s', None, headers)
+"""
+
+REPLAY_SCRIPT_HTTP_POST_CODE = """
+headers = %s
+params = '%s'
+resp_headers, data = send_request('%s', params, headers)
+"""
+
+class DumpError(Exception): pass
 
 class Options(object):
     attributes = [
@@ -15,6 +36,7 @@ class Options(object):
         "anticomp",
         "client_replay",
         "eventlog",
+        "generated_replay_script",        
         "keepserving",
         "kill",
         "no_server",
@@ -128,6 +150,12 @@ class DumpMaster(flow.FlowMaster):
             except flow.FlowReadError, v:
                 self.add_event("Flow file corrupted. Stopped loading.")
 
+        if options.generated_replay_script:
+            self.replay_script_file_handler = open(options.generated_replay_script, "w")
+            self.replay_script_file_handler.write(REPLAY_SCRIPT_INIT_CODE)
+        else:
+            self.replay_script_file_handler = None
+
         if self.o.app:
             self.start_app(self.o.app_host, self.o.app_port, self.o.app_external)
 
@@ -172,6 +200,9 @@ class DumpMaster(flow.FlowMaster):
                 result = result + "\n\n" + cont
         elif f.error:
             result = " << %s"%f.error.msg
+
+        if self.o.generated_replay_script:
+            self.add_replay_code(f.request, result)
 
         if self.o.verbosity == 1:
             print >> self.outfile, str_request(f.request, self.showhost)
@@ -218,7 +249,30 @@ class DumpMaster(flow.FlowMaster):
             self._process_flow(f)
         return f
 
+    def add_replay_code(self, request, result):
+        if not self.replay_script_file_handler:
+            return
+        # Convert values of request.headers to strings (currently arrays)
+        header_str = "{\n"
+        for (key, value) in request.headers.items():
+            line = "%s:%s," % (repr(key), repr(value))
+            header_str += self.indent(4, line) + "\n"
+        header_str += "}\n"
+
+        # Generate code to send the HTTP request
+        self.replay_script_file_handler.write("\n")
+        self.replay_script_file_handler.write("\n# " + str_request(request, self.showhost))
+        self.replay_script_file_handler.write("\n# " + result)
+        if request.method == "GET":
+            self.replay_script_file_handler.write(REPLAY_SCRIPT_HTTP_GET_CODE % (header_str, request.get_url()))
+        else:
+            self.replay_script_file_handler.write(REPLAY_SCRIPT_HTTP_POST_CODE % (header_str, request.content, request.get_url()))
+
     def shutdown(self):  # pragma: no cover
+        if self.replay_script_file_handler:
+            self.replay_script_file_handler.close()
+            self.replay_script_file_handler = None
+
         return flow.FlowMaster.shutdown(self)
 
     def run(self):  # pragma: no cover
