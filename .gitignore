@@ -1,3 +1,4 @@
+.DS_Store
 MANIFEST
 /build
 /dist
@@ -9,9 +10,18 @@ MANIFEST
 *.py[cdo]
 *.swp
 *.swo
+mitmproxy.egg-info/
 mitmproxyc
 mitmdumpc
 .coverage
 .idea
 netlib
+pathod
 libpathod
+
+# UI
+
+node_modules
+bower_components
+*.compiled.js
+*.map

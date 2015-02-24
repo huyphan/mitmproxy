@@ -1,4 +1,4 @@
-This fork adds the ability to generate Python code to replay HTTP requests. 
+This fork adds the ability to generate Python code to replay HTTP requests via `--generated-replay-script` parameter.
 
 Visit original repository at [github.com/mitmproxy/mitmproxy](http://github.com/mitmproxy/mitmproxy).
 

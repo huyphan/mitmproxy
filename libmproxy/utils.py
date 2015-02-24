@@ -1,7 +1,7 @@
-import os, datetime, urlparse, string, urllib, re
+from __future__ import absolute_import
+import os, datetime, urllib, re
 import time, functools, cgi
 import json
-from netlib import http
 
 def timestamp():
     """
@@ -62,12 +62,6 @@ def urlencode(s):
     """
     s = [tuple(i) for i in s]
     return urllib.urlencode(s, False)
-
-
-def del_all(dict, keys):
-    for key in keys:
-        if key in dict:
-            del dict[key]
 
 
 def pretty_size(size):
@@ -142,14 +136,6 @@ class LRUCache:
                     cache.pop(d)
                 return ret
         return wrap
-
-
-def parse_proxy_spec(url):
-    p = http.parse_url(url)
-    if not p or not p[1]:
-        return None
-    return p[:3]
-
 
 def parse_content_type(c):
     """

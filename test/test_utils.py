@@ -22,12 +22,6 @@ def test_isXml():
     assert utils.isXML("  \n<foo")
 
 
-def test_del_all():
-    d = dict(a=1, b=2, c=3)
-    utils.del_all(d, ["a", "x", "b"])
-    assert d.keys() == ["c"]
-
-
 def test_clean_hanging_newline():
     s = "foo\n"
     assert utils.clean_hanging_newline(s) == "foo"
@@ -85,14 +79,6 @@ def test_LRUCache():
 
     assert len(f._cached_one) == 2
     assert len(f._cachelist_one) == 2
-
-
-def test_parse_proxy_spec():
-    assert not utils.parse_proxy_spec("")
-    assert utils.parse_proxy_spec("http://foo.com:88") == ("http", "foo.com", 88)
-    assert utils.parse_proxy_spec("http://foo.com") == ("http", "foo.com", 80)
-    assert not utils.parse_proxy_spec("foo.com")
-    assert not utils.parse_proxy_spec("http://")
 
 
 def test_unparse_url():

@@ -1,7 +1,14 @@
+from __future__ import absolute_import
 import urwid
 import urwid.util
-from .. import utils, flow
+import os
+from .. import utils
+from ..protocol.http import CONTENT_MISSING, decoded
 
+try:
+    import pyperclip
+except:
+    pyperclip = False
 
 VIEW_LIST = 0
 VIEW_FLOW = 1
@@ -9,6 +16,17 @@ VIEW_FLOW = 1
 
 VIEW_FLOW_REQUEST = 0
 VIEW_FLOW_RESPONSE = 1
+
+METHOD_OPTIONS = [
+    ("get", "g"),
+    ("post", "p"),
+    ("put", "u"),
+    ("head", "h"),
+    ("trace", "t"),
+    ("delete", "d"),
+    ("options", "o"),
+    ("edit raw", "e"),
+]
 
 
 def highlight_key(s, k):
@@ -106,7 +124,7 @@ def raw_format_flow(f, focus, extended, padding):
 
     preamble = sum(i[1] for i in req) + len(req) -1
 
-    if f["intercepting"] and not f["req_acked"]:
+    if f["intercepted"] and not f["acked"]:
         uc = "intercept"
     elif f["resp_code"] or f["err_msg"]:
         uc = "text"
@@ -136,7 +154,7 @@ def raw_format_flow(f, focus, extended, padding):
         if f["resp_is_replay"]:
             resp.append(fcol(SYMBOL_REPLAY, "replay"))
         resp.append(fcol(f["resp_code"], ccol))
-        if f["intercepting"] and f["resp_code"] and not f["resp_acked"]:
+        if f["intercepted"] and f["resp_code"] and not f["acked"]:
             rc = "intercept"
         else:
             rc = "text"
@@ -160,6 +178,146 @@ def raw_format_flow(f, focus, extended, padding):
     return urwid.Pile(pile)
 
 
+# Save file to disk
+def save_data(path, data, master, state):
+    if not path:
+        return
+    state.last_saveload = path
+    path = os.path.expanduser(path)
+    try:
+        with file(path, "wb") as f:
+            f.write(data)
+    except IOError, v:
+        master.statusbar.message(v.strerror)
+
+
+def ask_save_path(prompt, data, master, state):
+    master.path_prompt(
+        prompt,
+        state.last_saveload,
+        save_data,
+        data,
+        master,
+        state
+    )
+
+
+def copy_flow_format_data(part, scope, flow):
+    if part == "u":
+        data = flow.request.url
+    else:
+        data = ""
+        if scope in ("q", "a"):
+            with decoded(flow.request):
+                if part == "h":
+                    data += flow.request.assemble()
+                elif part == "c":
+                    data += flow.request.content
+                else:
+                    raise ValueError("Unknown part: {}".format(part))
+        if scope == "a" and flow.request.content and flow.response:
+            # Add padding between request and response
+            data += "\r\n" * 2
+        if scope in ("s", "a") and flow.response:
+            with decoded(flow.response):
+                if part == "h":
+                    data += flow.response.assemble()
+                elif part == "c":
+                    data += flow.response.content
+                else:
+                    raise ValueError("Unknown part: {}".format(part))
+    return data
+
+
+def copy_flow(part, scope, flow, master, state):
+    """
+    part: _c_ontent, _a_ll, _u_rl
+    scope: _a_ll, re_q_uest, re_s_ponse
+    """
+    data = copy_flow_format_data(part, scope, flow)
+
+    if not data:
+        if scope == "q":
+            master.statusbar.message("No request content to copy.")
+        elif scope == "s":
+            master.statusbar.message("No response content to copy.")
+        else:
+            master.statusbar.message("No contents to copy.")
+        return
+
+    try:
+        master.add_event(str(len(data)))
+        pyperclip.copy(data)
+    except RuntimeError:
+        def save(k):
+            if k == "y":
+                ask_save_path("Save data: ", data, master, state)
+
+        master.prompt_onekey(
+            "Cannot copy binary data to clipboard. Save as file?",
+            (
+                ("yes", "y"),
+                ("no", "n"),
+            ),
+            save
+        )
+
+
+def ask_copy_part(scope, flow, master, state):
+    choices = [
+        ("content", "c"),
+        ("headers+content", "h")
+    ]
+    if scope != "s":
+        choices.append(("url", "u"))
+
+    master.prompt_onekey(
+        "Copy",
+        choices,
+        copy_flow,
+        scope,
+        flow,
+        master,
+        state
+    )
+
+
+def ask_save_body(part, master, state, flow):
+    """
+    Save either the request or the response body to disk.
+    part can either be "q" (request), "s" (response) or None (ask user if necessary).
+    """
+
+    request_has_content = flow.request and flow.request.content
+    response_has_content = flow.response and flow.response.content
+
+    if part is None:
+        # We first need to determine whether we want to save the request or the response content.
+        if request_has_content and response_has_content:
+            master.prompt_onekey(
+                "Save",
+                (
+                    ("request", "q"),
+                    ("response", "s"),
+                ),
+                ask_save_body,
+                master,
+                state,
+                flow
+            )
+        elif response_has_content:
+            ask_save_body("s", master, state, flow)
+        else:
+            ask_save_body("q", master, state, flow)
+
+    elif part == "q" and request_has_content:
+        ask_save_path("Save request content: ", flow.request.get_decoded_content(), master, state)
+    elif part == "s" and response_has_content:
+        ask_save_path("Save response content: ", flow.response.get_decoded_content(), master, state)
+    else:
+        master.statusbar.message("No content to save.")
+
+
 class FlowCache:
     @utils.LRUCache(200)
     def format_flow(self, *args):
@@ -169,13 +327,13 @@ flowcache = FlowCache()
 
 def format_flow(f, focus, extended=False, hostheader=False, padding=2):
     d = dict(
-        intercepting = f.intercepting,
+        intercepted = f.intercepted,
+        acked = f.reply.acked,
 
         req_timestamp = f.request.timestamp_start,
-        req_is_replay = f.request.is_replay(),
+        req_is_replay = f.request.is_replay,
         req_method = f.request.method,
-        req_acked = f.request.reply.acked,
-        req_url = f.request.get_url(hostheader=hostheader),
+        req_url = f.request.pretty_url(hostheader=hostheader),
 
         err_msg = f.error.msg if f.error else None,
         resp_code = f.response.code if f.response else None,
@@ -183,19 +341,21 @@ def format_flow(f, focus, extended=False, hostheader=False, padding=2):
     if f.response:
         if f.response.content:
             contentdesc = utils.pretty_size(len(f.response.content))
-        elif f.response.content == flow.CONTENT_MISSING:
+        elif f.response.content == CONTENT_MISSING:
             contentdesc = "[content missing]"
         else:
             contentdesc = "[no content]"
 
-        delta = f.response.timestamp_end - f.response.timestamp_start
-        size = len(f.response.content) + f.response.get_header_size()
+        if f.response.timestamp_end:
+            delta = f.response.timestamp_end - f.response.timestamp_start
+        else:
+            delta = 0
+        size = f.response.size()
         rate = utils.pretty_size(size / ( delta if delta > 0 else 1 ) )
 
         d.update(dict(
             resp_code = f.response.code,
-            resp_is_replay = f.response.is_replay(),
-            resp_acked = f.response.reply.acked,
+            resp_is_replay = f.response.is_replay,
             resp_clen = contentdesc,
             resp_rate = "{0}/s".format(rate),
         ))
@@ -205,7 +365,6 @@ def format_flow(f, focus, extended=False, hostheader=False, padding=2):
         else:
             d["resp_ctype"] = ""
     return flowcache.format_flow(tuple(sorted(d.items())), focus, extended, padding)
-
 
 
 def int_version(v):

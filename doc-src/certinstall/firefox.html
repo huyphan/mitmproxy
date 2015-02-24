@@ -1,10 +1,13 @@
+## Get the certificate to the browser
 
-How to install the __mitmproxy__ certificate authority in Firefox:
+The easiest way to get the certificate to the browser is to use [the web
+app](@!urlTo("webapp.html")!@). If this fails, do the following:
+
 
 <ol class="tlist">
     <li> If needed, copy the ~/.mitmproxy/mitmproxy-ca-cert.pem file to the target. </li>
 
-    <li>Open preferences, click on "Advanced", then select"Encryption":
+    <li>Open preferences, click on "Advanced", then select"Certificates":
         <img src="@!urlTo('firefox3.jpg')!@"/>
     </li>
 
@@ -12,12 +15,17 @@ How to install the __mitmproxy__ certificate authority in Firefox:
         <img src="@!urlTo('firefox3-import.jpg')!@"/>
     </li>
 
-    <li>Tick "Trust this CS to identify web sites", and click "Ok":
+</ol>
+
+
+## Installing the certificate
+
+<ol class="tlist">
+    <li>Tick "Trust this CA to identify web sites", and click "Ok":
         <img src="@!urlTo('firefox3-trust.jpg')!@"/>
     </li>
 
     <li> You should now see the mitmproxy certificate listed in the Authorities
     tab.</li>
-
 </ol>
 

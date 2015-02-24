@@ -1,18 +1,23 @@
+from __future__ import absolute_import
 import urwid
-import common
+from netlib import http
+from . import common
 
 def _mkhelp():
     text = []
     keys = [
         ("A", "accept all intercepted flows"),
         ("a", "accept this intercepted flow"),
+        ("b", "save request/response body"),
         ("C", "clear flow list or eventlog"),
         ("d", "delete flow"),
         ("D", "duplicate flow"),
         ("e", "toggle eventlog"),
         ("F", "toggle follow flow list"),
+        ("g", "copy flow to clipboard"),
         ("l", "set limit filter pattern"),
         ("L", "load saved flows"),
+        ("n", "create a new request"),
         ("r", "replay request"),
         ("V", "revert changes to request"),
         ("w", "save flows "),
@@ -68,7 +73,7 @@ class BodyPile(urwid.Pile):
             else:
                 self.widget_list[1].header = self.inactive_header
             key = None
-        elif key == "v":
+        elif key == "e":
             self.master.toggle_eventlog()
             key = None
 
@@ -119,13 +124,17 @@ class ConnectionItem(common.WWrap):
             self.master.start_server_playback(
                 [i.copy() for i in self.master.state.view],
                 self.master.killextra, self.master.rheaders,
-                False, self.master.nopop
+                False, self.master.nopop,
+                self.master.options.replay_ignore_params, self.master.options.replay_ignore_content,
+                self.master.options.replay_ignore_payload_params
             )
         elif k == "t":
             self.master.start_server_playback(
                 [self.flow.copy()],
                 self.master.killextra, self.master.rheaders,
-                False, self.master.nopop
+                False, self.master.nopop,
+                self.master.options.replay_ignore_params, self.master.options.replay_ignore_content,
+                self.master.options.replay_ignore_payload_params
             )
         else:
             self.master.path_prompt(
@@ -137,7 +146,7 @@ class ConnectionItem(common.WWrap):
     def keypress(self, (maxcol,), key):
         key = common.shortcuts(key)
         if key == "a":
-            self.flow.accept_intercept()
+            self.flow.accept_intercept(self.master)
             self.master.sync_list_view()
         elif key == "d":
             self.flow.kill(self.master)
@@ -147,7 +156,6 @@ class ConnectionItem(common.WWrap):
             f = self.master.duplicate_flow(self.flow)
             self.master.view_flow(f)
         elif key == "r":
-            self.flow.backup()
             r = self.master.replay_request(self.flow)
             if r:
                 self.master.statusbar.message(r)
@@ -200,6 +208,10 @@ class ConnectionItem(common.WWrap):
                 self.master.run_script_once,
                 self.flow
             )
+        elif key == "g":
+            common.ask_copy_part("a", self.flow, self.master, self.state)
+        elif key == "b":
+            common.ask_save_body(None, self.master, self.state, self.flow)
         else:
             return key
 
@@ -235,6 +247,32 @@ class FlowListBox(urwid.ListBox):
         self.master = master
         urwid.ListBox.__init__(self, master.flow_list_walker)
 
+    def get_method_raw(self, k):
+        if k:
+            self.get_url(k)    
+
+    def get_method(self, k):
+        if k == "e":
+            self.master.prompt("Method:", "", self.get_method_raw)
+        else:
+            method = ""
+            for i in common.METHOD_OPTIONS:
+                if i[1] == k:
+                    method = i[0].upper()
+            self.get_url(method)
+
+    def get_url(self,method):
+        self.master.prompt("URL:", "http://www.example.com/", self.new_request, method)
+
+    def new_request(self, url, method):
+        parts = http.parse_url(str(url))
+        if not parts:
+            self.master.statusbar.message("Invalid Url")
+            return
+        scheme, host, port, path = parts
+        f = self.master.create_request(method, scheme, host, port, path)
+        self.master.view_flow(f)
+
     def keypress(self, size, key):
         key = common.shortcuts(key)
         if key == "A":
@@ -252,6 +290,8 @@ class FlowListBox(urwid.ListBox):
                 self.master.state.last_saveload,
                 self.master.load_flows_callback
             )
+        elif key == "n":
+            self.master.prompt_onekey("Method", common.METHOD_OPTIONS, self.get_method)
         elif key == "F":
             self.master.toggle_follow_flows()
         elif key == "W":
@@ -261,7 +301,7 @@ class FlowListBox(urwid.ListBox):
                 self.master.path_prompt(
                     "Stream flows to: ",
                     self.master.state.last_saveload,
-                    self.master.start_stream
+                    self.master.start_stream_to_path
                 )
         else:
             return urwid.ListBox.keypress(self, size, key)

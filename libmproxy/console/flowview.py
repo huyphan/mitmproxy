@@ -1,7 +1,13 @@
-import os, sys
+from __future__ import absolute_import
+import os, sys, copy
 import urwid
-import common, grideditor, contentview
+from . import common, grideditor, contentview
 from .. import utils, flow, controller
+from ..protocol.http import HTTPRequest, HTTPResponse, CONTENT_MISSING, decoded
+
+
+class SearchError(Exception): pass
+
 
 def _mkhelp():
     text = []
@@ -13,6 +19,7 @@ def _mkhelp():
         ("D", "duplicate flow"),
         ("e", "edit request/response"),
         ("f", "load full body data"),
+        ("g", "copy response(content/headers) to clipboard"),        
         ("m", "change body display mode for this entity"),
             (None,
                 common.highlight_key("automatic", "a") +
@@ -63,6 +70,9 @@ def _mkhelp():
         ("tab", "toggle request/response view"),
         ("space", "next flow"),
         ("|", "run script on this flow"),
+        ("/", "search in response body (case sensitive)"),
+        ("n", "repeat search forward"),
+        ("N", "repeat search backwards"),
     ]
     text.extend(common.format_keyvals(keys, key="key", val="text", indent=4))
     return text
@@ -99,25 +109,19 @@ cache = CallbackCache()
 class FlowView(common.WWrap):
     REQ = 0
     RESP = 1
-    method_options = [
-        ("get", "g"),
-        ("post", "p"),
-        ("put", "u"),
-        ("head", "h"),
-        ("trace", "t"),
-        ("delete", "d"),
-        ("options", "o"),
-        ("edit raw", "e"),
-    ]
+
+    highlight_color = "focusfield"
+
     def __init__(self, master, state, flow):
         self.master, self.state, self.flow = master, state, flow
+        self.last_displayed_body = None
         if self.state.view_flow_mode == common.VIEW_FLOW_RESPONSE:
             self.view_response()
         else:
             self.view_request()
 
-    def _cached_content_view(self, viewmode, hdrItems, content, limit):
-        return contentview.get_content_view(viewmode, hdrItems, content, limit, self.master.add_event)
+    def _cached_content_view(self, viewmode, hdrItems, content, limit, is_request):
+        return contentview.get_content_view(viewmode, hdrItems, content, limit, self.master.add_event, is_request)
 
     def content_view(self, viewmode, conn):
         full = self.state.get_flow_setting(
@@ -129,57 +133,85 @@ class FlowView(common.WWrap):
             limit = sys.maxint
         else:
             limit = contentview.VIEW_CUTOFF
-        return cache.callback(
+        description, text_objects = cache.callback(
                     self, "_cached_content_view",
                     viewmode,
                     tuple(tuple(i) for i in conn.headers.lst),
                     conn.content,
-                    limit
+                    limit,
+                    isinstance(conn, HTTPRequest)
                 )
+        return (description, text_objects)
 
-    def conn_text(self, conn):
-        txt = common.format_keyvals(
-                [(h+":", v) for (h, v) in conn.headers.lst],
-                key = "header",
-                val = "text"
-            )
-        if conn.content is not None:
-            override = self.state.get_flow_setting(
-                self.flow,
-                (self.state.view_flow_mode, "prettyview"),
-            )
-            viewmode = self.state.default_body_view if override is None else override
-
-            if conn.content == flow.CONTENT_MISSING:
+    def cont_view_handle_missing(self, conn, viewmode):
+            if conn.content == CONTENT_MISSING:
                 msg, body = "", [urwid.Text([("error", "[content missing]")])]
             else:
                 msg, body = self.content_view(viewmode, conn)
 
-            cols = [
-                urwid.Text(
-                    [
-                        ("heading", msg),
-                    ]
+            return (msg, body)
+
+    def viewmode_get(self, override):
+        return self.state.default_body_view if override is None else override
+
+    def override_get(self):
+        return self.state.get_flow_setting(self.flow,
+                (self.state.view_flow_mode, "prettyview"))
+
+    def conn_text_raw(self, conn):
+        """
+            Based on a request/response, conn, returns the elements for
+            display.
+        """
+        headers = common.format_keyvals(
+                [(h+":", v) for (h, v) in conn.headers.lst],
+                key = "header",
+                val = "text"
+            )
+        override = self.override_get()
+        viewmode = self.viewmode_get(override)
+        msg, body = self.cont_view_handle_missing(conn, viewmode)
+        return headers, msg, body
+
+    def conn_text_merge(self, headers, msg, body):
+        """
+            Grabs what is returned by conn_text_raw and merges them all
+            toghether, mainly used by conn_text and search
+        """
+        override = self.override_get()
+        viewmode = self.viewmode_get(override)
+
+        cols = [urwid.Text(
+                [
+                    ("heading", msg),
+                ]
+            )
+        ]
+
+        if override is not None:
+            cols.append(urwid.Text([
+                        " ",
+                        ('heading', "["),
+                        ('heading_key', "m"),
+                        ('heading', (":%s]"%viewmode.name)),
+                    ],
+                    align="right"
                 )
-            ]
-            if override is not None:
-                cols.append(
-                    urwid.Text(
-                        [
-                            " ",
-                            ('heading', "["),
-                            ('heading_key', "m"),
-                            ('heading', (":%s]"%viewmode.name)),
-                        ],
-                        align="right"
-                    )
-                )
-            title = urwid.AttrWrap(urwid.Columns(cols), "heading")
-            txt.append(title)
-            txt.extend(body)
-        elif conn.content == flow.CONTENT_MISSING:
-            pass
-        return urwid.ListBox(txt)
+            )
+
+        title = urwid.AttrWrap(urwid.Columns(cols), "heading")
+        headers.append(title)
+        headers.extend(body)
+
+        return headers
+
+    def conn_text(self, conn):
+        """
+        Same as conn_text_raw, but returns result wrapped in a listbox ready for usage.
+        """
+        headers, msg, body = self.conn_text_raw(conn)
+        merged = self.conn_text_merge(headers, msg, body)
+        return urwid.ListBox(merged)
 
     def _tab(self, content, attr):
         p = urwid.Text(content)
@@ -190,7 +222,7 @@ class FlowView(common.WWrap):
     def wrap_body(self, active, body):
         parts = []
 
-        if self.flow.intercepting and not self.flow.request.reply.acked:
+        if self.flow.intercepted and not self.flow.reply.acked and not self.flow.response:
             qt = "Request intercepted"
         else:
             qt = "Request"
@@ -199,7 +231,7 @@ class FlowView(common.WWrap):
         else:
             parts.append(self._tab(qt, "heading_inactive"))
 
-        if self.flow.intercepting and self.flow.response and not self.flow.response.reply.acked:
+        if self.flow.intercepted and not self.flow.reply.acked and self.flow.response:
             st = "Response intercepted"
         else:
             st = "Response"
@@ -214,6 +246,211 @@ class FlowView(common.WWrap):
                     header=h
                 )
         return f
+
+    def search_wrapped_around(self, last_find_line, last_search_index, backwards):
+        """
+            returns true if search wrapped around the bottom.
+        """
+
+        current_find_line = self.state.get_flow_setting(self.flow,
+                "last_find_line")
+        current_search_index = self.state.get_flow_setting(self.flow,
+                "last_search_index")
+
+        if not backwards:
+            message = "search hit BOTTOM, continuing at TOP"
+            if current_find_line <= last_find_line:
+                return True, message
+            elif current_find_line == last_find_line:
+                if current_search_index <= last_search_index:
+                    return True, message
+        else:
+            message = "search hit TOP, continuing at BOTTOM"
+            if current_find_line >= last_find_line:
+                return True, message
+            elif current_find_line == last_find_line:
+                if current_search_index >= last_search_index:
+                    return True, message
+
+        return False, ""
+
+    def search_again(self, backwards=False):
+        """
+            runs the previous search again, forwards or backwards.
+        """
+        last_search_string = self.state.get_flow_setting(self.flow, "last_search_string")
+        if last_search_string:
+            message = self.search(last_search_string, backwards)
+            if message:
+                self.master.statusbar.message(message)
+        else:
+            message = "no previous searches have been made"
+            self.master.statusbar.message(message)
+
+        return message
+
+    def search(self, search_string, backwards=False):
+        """
+            similar to view_response or view_request, but instead of just
+            displaying the conn, it highlights a word that the user is
+            searching for and handles all the logic surrounding that.
+        """
+
+        if not search_string:
+            search_string = self.state.get_flow_setting(self.flow,
+                    "last_search_string")
+            if not search_string:
+                return
+
+        if self.state.view_flow_mode == common.VIEW_FLOW_REQUEST:
+            text = self.flow.request
+            const = common.VIEW_FLOW_REQUEST
+        else:
+            text = self.flow.response
+            const = common.VIEW_FLOW_RESPONSE
+            if not self.flow.response:
+                return "no response to search in"
+
+        last_find_line = self.state.get_flow_setting(self.flow,
+                "last_find_line")
+        last_search_index = self.state.get_flow_setting(self.flow,
+                "last_search_index")
+
+        # generate the body, highlight the words and get focus
+        headers, msg, body = self.conn_text_raw(text)
+        try:
+            body, focus_position = self.search_highlight_text(body, search_string, backwards=backwards)
+        except SearchError:
+            return "Search not supported in this view."
+
+        if focus_position == None:
+            # no results found.
+            return "no matches for '%s'" % search_string
+
+        # UI stuff.
+        merged = self.conn_text_merge(headers, msg, body)
+        list_box = urwid.ListBox(merged)
+        list_box.set_focus(focus_position + 2)
+        self.w = self.wrap_body(const, list_box)
+        self.master.statusbar.redraw()
+
+        self.last_displayed_body = list_box
+
+        wrapped, wrapped_message = self.search_wrapped_around(last_find_line, last_search_index, backwards)
+
+        if wrapped:
+            return wrapped_message
+
+    def search_get_start(self, search_string):
+        start_line = 0
+        start_index = 0
+        last_search_string = self.state.get_flow_setting(self.flow, "last_search_string")
+        if search_string == last_search_string:
+            start_line = self.state.get_flow_setting(self.flow, "last_find_line")
+            start_index = self.state.get_flow_setting(self.flow,
+                    "last_search_index")
+
+            if start_index == None:
+                start_index = 0
+            else:
+                start_index += len(search_string)
+
+            if start_line == None:
+                start_line = 0
+
+        else:
+            self.state.add_flow_setting(self.flow, "last_search_string",
+                    search_string)
+
+        return (start_line, start_index)
+
+    def search_get_range(self, len_text_objects, start_line, backwards):
+        if not backwards:
+            loop_range = xrange(start_line, len_text_objects)
+        else:
+            loop_range = xrange(start_line, -1, -1)
+
+        return loop_range
+
+    def search_find(self, text, search_string, start_index, backwards):
+            if backwards == False:
+                find_index = text.find(search_string, start_index)
+            else:
+                if start_index != 0:
+                    start_index -= len(search_string)
+                else:
+                    start_index = None
+
+                find_index = text.rfind(search_string, 0, start_index)
+
+            return find_index
+
+    def search_highlight_text(self, text_objects, search_string, looping = False, backwards = False):
+        start_line, start_index = self.search_get_start(search_string)
+        i = start_line
+
+        found = False
+        text_objects = copy.deepcopy(text_objects)
+        loop_range = self.search_get_range(len(text_objects), start_line, backwards)
+        for i in loop_range:
+            text_object = text_objects[i]
+
+            try:
+                text, style = text_object.get_text()
+            except AttributeError:
+                raise SearchError()
+
+            if i != start_line:
+                start_index = 0
+
+            find_index = self.search_find(text, search_string, start_index, backwards)
+
+            if find_index != -1:
+                new_text = self.search_highlight_object(text, find_index, search_string)
+                text_objects[i] = new_text
+
+                found = True
+                self.state.add_flow_setting(self.flow, "last_search_index",
+                        find_index)
+                self.state.add_flow_setting(self.flow, "last_find_line", i)
+
+                break
+
+        # handle search WRAP
+        if found:
+            focus_pos = i
+        else :
+            if looping:
+                focus_pos = None
+            else:
+                if not backwards:
+                    self.state.add_flow_setting(self.flow, "last_search_index", 0)
+                    self.state.add_flow_setting(self.flow, "last_find_line", 0)
+                else:
+                    self.state.add_flow_setting(self.flow, "last_search_index", None)
+                    self.state.add_flow_setting(self.flow, "last_find_line", len(text_objects) - 1)
+
+                text_objects, focus_pos = self.search_highlight_text(text_objects,
+                        search_string, looping=True, backwards=backwards)
+
+        return text_objects, focus_pos
+
+    def search_highlight_object(self, text_object, find_index, search_string):
+        """
+            just a little abstraction
+        """
+        before = text_object[:find_index]
+        after = text_object[find_index+len(search_string):]
+
+        new_text = urwid.Text(
+            [
+                before,
+                (self.highlight_color, search_string),
+                after,
+            ]
+        )
+
+        return new_text
 
     def view_request(self):
         self.state.view_flow_mode = common.VIEW_FLOW_REQUEST
@@ -257,30 +494,16 @@ class FlowView(common.WWrap):
         if m == "e":
             self.master.prompt_edit("Method", self.flow.request.method, self.set_method_raw)
         else:
-            for i in self.method_options:
+            for i in common.METHOD_OPTIONS:
                 if i[1] == m:
                     self.flow.request.method = i[0].upper()
             self.master.refresh_flow(self.flow)
 
-    def save_body(self, path):
-        if not path:
-            return
-        self.state.last_saveload = path
-        if self.state.view_flow_mode == common.VIEW_FLOW_REQUEST:
-            c = self.flow.request
-        else:
-            c = self.flow.response
-        path = os.path.expanduser(path)
-        try:
-            f = file(path, "wb")
-            f.write(str(c.content))
-            f.close()
-        except IOError, v:
-            self.master.statusbar.message(v.strerror)
-
     def set_url(self, url):
         request = self.flow.request
-        if not request.set_url(str(url)):
+        try:
+            request.url = str(url)
+        except ValueError:
             return "Invalid URL."
         self.master.refresh_flow(self.flow)
 
@@ -323,23 +546,27 @@ class FlowView(common.WWrap):
 
     def edit(self, part):
         if self.state.view_flow_mode == common.VIEW_FLOW_REQUEST:
-            conn = self.flow.request
+            message = self.flow.request
         else:
             if not self.flow.response:
-                self.flow.response = flow.Response(
-                    self.flow.request,
+                self.flow.response = HTTPResponse(
                     self.flow.request.httpversion,
-                    200, "OK", flow.ODictCaseless(), "", None
+                    200, "OK", flow.ODictCaseless(), ""
                 )
                 self.flow.response.reply = controller.DummyReply()
-            conn = self.flow.response
+            message = self.flow.response
 
         self.flow.backup()
         if part == "r":
-            c = self.master.spawn_editor(conn.content or "")
-            conn.content = c.rstrip("\n") # what?
+            with decoded(message):
+                # Fix an issue caused by some editors when editing a request/response body.
+                # Many editors make it hard to save a file without a terminating newline on the last
+                # line. When editing message bodies, this can cause problems. For now, I just
+                # strip the newlines off the end of the body when we return from an editor.
+                c = self.master.spawn_editor(message.content or "")
+                message.content = c.rstrip("\n")
         elif part == "f":
-            if not conn.get_form_urlencoded() and conn.content:
+            if not message.get_form_urlencoded() and message.content:
                 self.master.prompt_onekey(
                     "Existing body is not a URL-encoded form. Clear and edit?",
                     [
@@ -347,26 +574,26 @@ class FlowView(common.WWrap):
                         ("no", "n"),
                     ],
                     self.edit_form_confirm,
-                    conn
+                    message
                 )
             else:
-                self.edit_form(conn)
+                self.edit_form(message)
         elif part == "h":
-            self.master.view_grideditor(grideditor.HeaderEditor(self.master, conn.headers.lst, self.set_headers, conn))
+            self.master.view_grideditor(grideditor.HeaderEditor(self.master, message.headers.lst, self.set_headers, message))
         elif part == "p":
-            p = conn.get_path_components()
+            p = message.get_path_components()
             p = [[i] for i in p]
-            self.master.view_grideditor(grideditor.PathEditor(self.master, p, self.set_path_components, conn))
+            self.master.view_grideditor(grideditor.PathEditor(self.master, p, self.set_path_components, message))
         elif part == "q":
-            self.master.view_grideditor(grideditor.QueryEditor(self.master, conn.get_query().lst, self.set_query, conn))
+            self.master.view_grideditor(grideditor.QueryEditor(self.master, message.get_query().lst, self.set_query, message))
         elif part == "u" and self.state.view_flow_mode == common.VIEW_FLOW_REQUEST:
-            self.master.prompt_edit("URL", conn.get_url(), self.set_url)
+            self.master.prompt_edit("URL", message.url, self.set_url)
         elif part == "m" and self.state.view_flow_mode == common.VIEW_FLOW_REQUEST:
-            self.master.prompt_onekey("Method", self.method_options, self.edit_method)
+            self.master.prompt_onekey("Method", common.METHOD_OPTIONS, self.edit_method)
         elif part == "c" and self.state.view_flow_mode == common.VIEW_FLOW_RESPONSE:
-            self.master.prompt_edit("Code", str(conn.code), self.set_resp_code)
+            self.master.prompt_edit("Code", str(message.code), self.set_resp_code)
         elif part == "m" and self.state.view_flow_mode == common.VIEW_FLOW_RESPONSE:
-            self.master.prompt_edit("Message", conn.msg, self.set_resp_msg)
+            self.master.prompt_edit("Message", message.msg, self.set_resp_msg)
         self.master.refresh_flow(self.flow)
 
     def _view_nextprev_flow(self, np, flow):
@@ -399,7 +626,7 @@ class FlowView(common.WWrap):
 
     def delete_body(self, t):
         if t == "m":
-            val = flow.CONTENT_MISSING
+            val = CONTENT_MISSING
         else:
             val = None
         if self.state.view_flow_mode == common.VIEW_FLOW_REQUEST:
@@ -431,25 +658,16 @@ class FlowView(common.WWrap):
             # Why doesn't this just work??
             self.w.keypress(size, key)
         elif key == "a":
-            self.flow.accept_intercept()
+            self.flow.accept_intercept(self.master)
             self.master.view_flow(self.flow)
         elif key == "A":
             self.master.accept_all()
             self.master.view_flow(self.flow)
         elif key == "b":
-            if conn:
-                if self.state.view_flow_mode == common.VIEW_FLOW_REQUEST:
-                    self.master.path_prompt(
-                        "Save request body: ",
-                        self.state.last_saveload,
-                        self.save_body
-                    )
-                else:
-                    self.master.path_prompt(
-                        "Save response body: ",
-                        self.state.last_saveload,
-                        self.save_body
-                    )
+            if self.state.view_flow_mode == common.VIEW_FLOW_REQUEST:
+                common.ask_save_body("q", self.master, self.state, self.flow)
+            else:
+                common.ask_save_body("s", self.master, self.state, self.flow)
         elif key == "d":
             if self.state.flow_count() == 1:
                 self.master.view_flowlist()
@@ -500,9 +718,15 @@ class FlowView(common.WWrap):
             )
             self.master.refresh_flow(self.flow)
             self.master.statusbar.message("")
+        elif key == "g":
+            if self.state.view_flow_mode == common.VIEW_FLOW_REQUEST:
+                scope = "q"
+            else:
+                scope = "s"
+            common.ask_copy_part(scope, self.flow, self.master, self.state)
         elif key == "m":
             p = list(contentview.view_prompts)
-            p.insert(0, ("clear", "c"))
+            p.insert(0, ("Clear", "C"))
             self.master.prompt_onekey(
                 "Display mode",
                 p,
@@ -512,7 +736,6 @@ class FlowView(common.WWrap):
         elif key == "p":
             self.view_prev_flow(self.flow)
         elif key == "r":
-            self.flow.backup()
             r = self.master.replay_request(self.flow)
             if r:
                 self.master.statusbar.message(r)
@@ -574,6 +797,16 @@ class FlowView(common.WWrap):
                         conn
                     )
                 self.master.refresh_flow(self.flow)
+        elif key == "/":
+            last_search_string = self.state.get_flow_setting(self.flow, "last_search_string")
+            search_prompt = "Search body ["+last_search_string+"]: " if last_search_string else "Search body: "
+            self.master.prompt(search_prompt,
+                    None,
+                    self.search)
+        elif key == "n":
+            self.search_again(backwards=False)
+        elif key == "N":
+            self.search_again(backwards=True)
         else:
             return key
 

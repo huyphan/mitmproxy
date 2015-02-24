@@ -1,0 +1,77 @@
+//TODO: Move into some utils
+.monospace(){
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+
+.flow-detail {
+    width: 100%;
+    overflow: auto;
+    
+    nav {
+        background-color: #F2F2F2;
+    }
+
+    section {
+        padding: 5px 12px;
+    }
+
+    .first-line {
+        .monospace();
+        background-color: #428bca;
+        color: white;
+        margin: 0 -8px;
+        padding: 4px 8px;
+        border-radius: 5px;
+        word-break: break-all;
+        max-height: 100px;
+        overflow-y: auto;
+    }
+}
+
+
+.flow-detail table {
+    .monospace();
+    width: 100%;
+    table-layout: fixed;
+    word-break: break-all;
+    
+    tr {
+        &:not(:first-child){
+        border-top: 1px solid #f7f7f7;
+        }
+    }
+
+    td {
+        vertical-align: top;
+        //alt:
+        //white-space: nowrap;
+        //overflow: hidden;
+        //text-overflow: ellipsis;
+    }
+}
+
+.connection-table {
+    td:first-child {
+        width: 50%;
+        padding-right: 1em;
+    }
+}
+
+.header-table {
+    .header-name {
+        width: 33%;
+        padding-right: 1em;
+    }
+    .header-value {
+        
+    }
+}
+
+.connection-table, .timing-table {
+    td {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+}

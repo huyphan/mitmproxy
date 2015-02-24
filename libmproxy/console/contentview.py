@@ -1,23 +1,31 @@
-import re, cStringIO, traceback, json
-import urwid
-
-try: from PIL import Image
-except ImportError: import Image
-
-try: from PIL.ExifTags import TAGS
-except ImportError: from ExifTags import TAGS
+from __future__ import absolute_import
+import logging, subprocess, re, cStringIO, traceback, json, urwid
+from PIL import Image
+from PIL.ExifTags import TAGS
 
 import lxml.html, lxml.etree
 import netlib.utils
-import common
+from . import common
 from .. import utils, encoding, flow
 from ..contrib import jsbeautifier, html2text
-import subprocess
+from ..contrib.wbxml.ASCommandResponse import ASCommandResponse
 try:
     import pyamf
     from pyamf import remoting, flex
 except ImportError: # pragma nocover
     pyamf = None
+
+try:
+    import cssutils
+except ImportError: # pragma nocover
+    cssutils = None
+else:
+    cssutils.log.setLevel(logging.CRITICAL)
+
+    cssutils.ser.prefs.keepComments = True
+    cssutils.ser.prefs.omitLastSemicolon = False
+    cssutils.ser.prefs.indentClosingBrace = False
+    cssutils.ser.prefs.validOnly = False
 
 VIEW_CUTOFF = 1024*50
 
@@ -318,7 +326,23 @@ class ViewJavaScript:
         opts = jsbeautifier.default_options()
         opts.indent_size = 2
         res = jsbeautifier.beautify(content[:limit], opts)
-        return "JavaScript", _view_text(res, len(content), limit)
+        return "JavaScript", _view_text(res, len(res), limit)
+
+class ViewCSS:
+    name = "CSS"
+    prompt = ("css", "c")
+    content_types = [
+        "text/css"
+    ]
+
+    def __call__(self, hdrs, content, limit):
+        if cssutils:
+            sheet = cssutils.parseString(content)
+            beautified = sheet.cssText
+        else:
+            beautified = content
+
+        return "CSS", _view_text(beautified, len(beautified), limit)
 
 
 class ViewImage:
@@ -371,7 +395,10 @@ class ViewProtobuf:
 
     name = "Protocol Buffer"
     prompt = ("protobuf", "p")
-    content_types = ["application/x-protobuf"]
+    content_types = [
+        "application/x-protobuf",
+        "application/x-protobuffer",
+    ]
 
     @staticmethod
     def is_available():
@@ -400,15 +427,35 @@ class ViewProtobuf:
         txt = _view_text(decoded[:limit], len(decoded), limit)
         return "Protobuf", txt
 
+class ViewWBXML:
+    name = "WBXML"
+    prompt = ("wbxml", "w")
+    content_types = [
+        "application/vnd.wap.wbxml",
+        "application/vnd.ms-sync.wbxml"
+    ]
+
+    def __call__(self, hdrs, content, limit):
+        
+        try:
+            parser = ASCommandResponse(content)
+            parsedContent = parser.xmlString
+            txt = _view_text(parsedContent, len(parsedContent), limit)
+            return "WBXML", txt
+        except:
+        	return None
+
 views = [
     ViewAuto(),
     ViewRaw(),
     ViewHex(),
     ViewJSON(),
     ViewXML(),
+    ViewWBXML(),
     ViewHTML(),
     ViewHTMLOutline(),
     ViewJavaScript(),
+    ViewCSS(),
     ViewURLEncoded(),
     ViewMultipart(),
     ViewImage(),
@@ -441,12 +488,15 @@ def get(name):
             return i
 
 
-def get_content_view(viewmode, hdrItems, content, limit, logfunc):
+def get_content_view(viewmode, hdrItems, content, limit, logfunc, is_request):
     """
         Returns a (msg, body) tuple.
     """
     if not content:
-        return ("No content", "")
+        if is_request:
+            return "No request content (press tab to view response)", ""
+        else:
+            return "No content", ""
     msg = []
 
     hdrs = flow.ODictCaseless([list(i) for i in hdrItems])
@@ -460,10 +510,10 @@ def get_content_view(viewmode, hdrItems, content, limit, logfunc):
     try:
         ret = viewmode(hdrs, content, limit)
     # Third-party viewers can fail in unexpected ways...
-    except Exception, e:
+    except Exception:
         s = traceback.format_exc()
         s = "Content viewer failed: \n"  + s
-        logfunc(s)
+        logfunc(s, "error")
         ret = None
     if not ret:
         ret = get("Raw")(hdrs, content, limit)

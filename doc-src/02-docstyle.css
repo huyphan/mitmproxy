@@ -10,3 +10,11 @@ body {
 .nowrap {
      white-space: nowrap;
 }
+
+h1 {
+    line-height: 1.1;
+}
+
+.page-header {
+    margin: 0px 0 22px;
+}

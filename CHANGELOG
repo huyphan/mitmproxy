@@ -1,3 +1,78 @@
+29 Dec 2014: mitmproxy 0.11.2:
+
+    * Configuration files - mitmproxy.conf, mitmdump.conf, common.conf in the
+      .mitmproxy directory.
+    * Better handling of servers that reject connections that are not SNI.
+    * Many other small bugfixes and improvements.
+
+
+15 November 2014: mitmproxy 0.11.1:
+
+    * Bug fixes: connection leaks some crashes 
+
+
+7 November 2014: mitmproxy 0.11:
+    
+    * Performance improvements for mitmproxy console
+
+    * SOCKS5 proxy mode allows mitmproxy to act as a SOCKS5 proxy server
+
+    * Data streaming for response bodies exceeding a threshold
+      (bradpeabody@gmail.com)
+
+    * Ignore hosts or IP addresses, forwarding both HTTP and HTTPS traffic
+      untouched
+
+    * Finer-grained control of traffic replay, including options to ignore
+      contents or parameters when matching flows (marcelo.glezer@gmail.com)
+
+    * Pass arguments to inline scripts 
+
+    * Configurable size limit on HTTP request and response bodies
+
+    * Per-domain specification of interception certificates and keys (see
+      --cert option)
+
+    * Certificate forwarding, relaying upstream SSL certificates verbatim (see
+      --cert-forward)
+
+    * Search and highlighting for HTTP request and response bodies in
+      mitmproxy console (pedro@worcel.com)
+
+    * Transparent proxy support on Windows
+
+    * Improved error messages and logging
+
+    * Support for FreeBSD in transparent mode, using pf (zbrdge@gmail.com)
+
+    * Content view mode for WBXML (davidshaw835@air-watch.com)
+
+    * Better documentation, with a new section on proxy modes
+
+    * Generic TCP proxy mode
+
+    * Countless bugfixes and other small improvements
+
+
+
+28 January 2014: mitmproxy 0.10:
+	
+    * Support for multiple scripts and multiple script arguments
+
+    * Easy certificate install through the in-proxy web app, which is now
+      enabled by default
+
+    * Forward proxy mode, that forwards proxy requests to an upstream HTTP server
+
+    * Reverse proxy now works with SSL
+
+    * Search within a request/response using the "/" and "n" shortcut keys
+
+    * A view that beatifies CSS files if cssutils is available
+
+    * Bug fix, documentation improvements, and more.
+
+
 25 August 2013: mitmproxy 0.9.2:
 
     * Improvements to the mitmproxywrapper.py helper script for OSX.
